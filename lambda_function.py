@@ -3,53 +3,30 @@ import json
 import boto3
 import logging
 import traceback
-import psycopg2
+import pg8000.dbapi
 
-from botocore.exceptions import ClientError
+logger = logging.getLogger()
 
 kinesis_client = boto3.client('kinesis')
-rds_client = boto3.client('rds')
-
-def get_db_credentials():
-    credential = {}
-
-    secret_name = os.environ['SECRET_NAME']
-    region = os.environ['REGION']
-
-    secrets_client = boto3.client(service_name='secretsmanager', region_name=region)
-
-    try:
-        secret_response = secrets_client.get_secret_value(SecretId=secret_name)
-    except ClientError as e:
-        logging.error("ERROR: Unexpected error: Could not fetch secret from Secrets Manager")
-        logging.error(e)
-
-    secret_str = json.loads(secret_response['SecretString'])
-
-    credential['DB_USER'] = secret_str['DB_USER']
-    credential['DB_PASSWORD'] = secret_str['DB_PASSWORD']
-    credential['DB_PROXY_HOST'] = secret_str['DB_PROXY_HOST']
-    credential['DB_NAME'] = secret_str['DB_NAME']
-
-    return credential
 
 try:
-    credentials = get_db_credentials()
+    logger.info("INFO: Attempting to connect to RDS Proxy for Aurora Postgres..")
 
-    database_conn = psycopg2.connect(
-        host=credentials['DB_PROXY_HOST'],
-        database=credentials['DB_NAME'],
-        user=credentials['DB_USER'],
-        password=credentials['DB_PASSWORD']
+    database_conn = pg8000.dbapi.connect(
+        host=os.environ['DB_HOST'],
+        database=os.environ['DB_NAME'],
+        user=os.environ['DB_USER'], 
+        password=os.environ['DB_PASSWORD']
     )
-    logging.info("SUCCESS: Connection to RDS Proxy for Aurora Postgres established.")
-except psycopg2.Error as e:
-    logging.error("ERROR: Unexpected error: Could not connect to Postgres RDS Proxy")
-    logging.error(e)
+
+    logger.info("SUCCESS: Connection to RDS Proxy for Aurora Postgres established.")
+except pg8000.Error as e:
+    logger.error("ERROR: Unexpected error: Could not connect to Postgres RDS Proxy")
+    logger.error(e)
 
 def lambda_handler(event, context):
     try:
-        data = json.loads(event['body'])
+        # data = json.loads(event['body'])
 
         # consume records from kinesis
         # stream_name=os.environ.get('KINESIS_STREAM_NAME'),
@@ -58,10 +35,13 @@ def lambda_handler(event, context):
         # perform sentiment analysis with vader
 
         # save results to aurora
-        with database_conn.cursor() as cur:
+        cur = database_conn.cursor()
+        try:
             cur.execute("select * from news")
             for row in cur.fetchall():
-                logging.info(row)
+                logger.info(row)
+        finally:
+            cur.close()  # Ensure closure even if exceptions occur
         
         database_conn.commit()
 
