@@ -1,11 +1,15 @@
 import os
 import json
+import base64
 import boto3
 import logging
 import traceback
+
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import pg8000.dbapi
 
 logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 kinesis_client = boto3.client('kinesis')
 
@@ -26,22 +30,37 @@ except pg8000.Error as e:
 
 def lambda_handler(event, context):
     try:
-        # data = json.loads(event['body'])
-
-        # consume records from kinesis
-        # stream_name=os.environ.get('KINESIS_STREAM_NAME'),
-        # stream_arn=os.environ.get('KINESIS_STREAM_ARN')
-
-        # perform sentiment analysis with vader
-
-        # save results to aurora
+        db_batch_size = 20
         cur = database_conn.cursor()
+
+        final_records = []
+
+        analyzer = SentimentIntensityAnalyzer()
+
+        # Load the Kinesis records and perform sentiment analysis
+        for record in event['Records']:
+            try:
+                record_data = json.loads(base64.b64decode(record['kinesis']['data']).decode('utf-8'))
+
+                vs = analyzer.polarity_scores(record_data['title'])
+                record_data['compound_score'] = vs['compound']
+
+                final_records.append(tuple(record_data.values()))
+            except Exception as e:
+                print(f"An error occurred {e}")
+                raise e
+
+        # Save the final records to Aurora cluster via RDS Proxy
         try:
-            cur.execute("select * from news")
-            for row in cur.fetchall():
-                logger.info(row)
+            for i in range(0, len(final_records), db_batch_size):
+                batch = final_records[i:i + db_batch_size]
+
+                cur.executemany("""
+                    INSERT INTO news (symbol, collection_time, title, link, publisher, compound_score, modtime)
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                """, batch)
         finally:
-            cur.close()  # Ensure closure even if exceptions occur
+            cur.close()
         
         database_conn.commit()
 
