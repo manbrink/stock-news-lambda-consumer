@@ -40,18 +40,24 @@ def lambda_handler(event, context):
         # Load the Kinesis records and perform sentiment analysis
         for record in event['Records']:
             try:
+                logger.info("INFO: Attempting to decode and read Kinesis records..")
+
                 record_data = json.loads(base64.b64decode(record['kinesis']['data']).decode('utf-8'))
 
                 vs = analyzer.polarity_scores(record_data['title'])
                 record_data['compound_score'] = vs['compound']
 
                 final_records.append(tuple(record_data.values()))
+
+                logger.info("SUCCESS: Kinesis data decoded, sentiment analysis completed.")
             except Exception as e:
-                print(f"An error occurred {e}")
-                raise e
+                logger.error("ERROR: Unexpected error: something happened when reading from Kinesis or performing sentiment analysis.")
+                logger.error(e)
 
         # Save the final records to Aurora cluster via RDS Proxy
         try:
+            logger.info("INFO: Attempting to save records to Aurora..")
+
             for i in range(0, len(final_records), db_batch_size):
                 batch = final_records[i:i + db_batch_size]
 
@@ -59,6 +65,8 @@ def lambda_handler(event, context):
                     INSERT INTO news (symbol, collection_time, title, link, publisher, compound_score, modtime)
                     VALUES (%s, %s, %s, %s, %s, %s, NOW())
                 """, batch)
+            
+            logger.info("SUCCESS: Data inserted in Aurora.")
         finally:
             cur.close()
         
@@ -67,4 +75,4 @@ def lambda_handler(event, context):
         return True
     except Exception as e:
         traceback.print_exc()
-        return str(e)
+        logger.error(e)
